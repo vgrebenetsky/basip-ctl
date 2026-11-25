@@ -1,0 +1,26 @@
+# Зібрані файли
+/basip-ctl
+*.exe
+/dist/
+
+# Робочі дані з паролями та хешами — не публікувати
+devices.csv
+*.csv
+!devices.example.csv
+*.bak
+*.bak[0-9]*
+*.tmp
+
+# Локальні профілі API (можуть містити специфіку об'єктів)
+endpoints.json
+!endpoints.example.json
+
+# Журнали, звіти, резервні копії пристроїв
+*.log
+backup_*.zip
+*.zip
+
+# Середовище
+.idea/
+.vscode/
+.DS_Store

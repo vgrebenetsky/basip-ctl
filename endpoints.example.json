@@ -1,0 +1,19 @@
+{
+  "profiles": {
+    "android-v2": {
+      "prefix": "/api/v1",
+      "ops": {
+        "login": { "method": "POST", "path": "/login", "mode": "json" }
+      }
+    },
+    "controller-v1": {
+      "prefix": "/api/v1",
+      "ops": {
+        "login": { "method": "GET", "path": "/login", "mode": "query" }
+      }
+    }
+  },
+  "rules": [
+    { "device_type": "accesscontroller", "api_major": "1", "profile": "controller-v1" }
+  ]
+}
