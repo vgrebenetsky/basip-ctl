@@ -97,22 +97,37 @@ func (c *Client) CallJSON(op string, vars map[string]string, q url.Values, paylo
 }
 
 // Download завантажує файл (архів). Відповідь у форматі JSON вважається помилкою.
-// На збій пристрою (HTTP 5xx) робиться до двох повторів з паузою 3 і 6 с:
-// панелі іноді не встигають сформувати експорт одразу після попереднього.
+// Повтори:
+//   - HTTP 5xx — до двох повторів з паузою 3 і 6 с;
+//   - HTTP 400 «... is being processed» (панель ще формує попередній експорт) —
+//     очікування з перевіркою кожні 5 с, загалом до 2 хв.
 func (c *Client) Download(op string) ([]byte, error) {
 	c.long = true
 	defer func() { c.long = false }()
 	var data []byte
 	var hdr http.Header
 	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			time.Sleep(time.Duration(3*attempt) * time.Second)
-			logf("%s повтор %d: %s", c.dev.IP, attempt, op)
-		}
+	fails5xx := 0
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
 		data, hdr, err = c.Call(op, nil, nil, nil, "")
 		var oe *OpError
-		if err != nil && errors.As(err, &oe) && oe.Code >= 500 {
+		if err == nil || !errors.As(err, &oe) {
+			break
+		}
+		if oe.Code >= 500 && fails5xx < 2 {
+			fails5xx++
+			logf("%s %s: збій пристрою, повтор %d", c.dev.IP, op, fails5xx)
+			time.Sleep(time.Duration(3*fails5xx) * time.Second)
+			continue
+		}
+		if oe.Code == 400 && strings.Contains(strings.ToLower(oe.Msg), "being processed") {
+			if time.Now().After(deadline) {
+				err = errors.New("пристрій понад 2 хв повідомляє, що експорт ще триває (ймовірно, завис — допоможе перезавантаження)")
+				break
+			}
+			logf("%s %s: експорт ще триває, чекаємо 5 с", c.dev.IP, op)
+			time.Sleep(5 * time.Second)
 			continue
 		}
 		break

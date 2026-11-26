@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const appVersion = "0.2.1 (етап 2)"
+const appVersion = "0.2.2 (етап 2)"
 
 // defaultDevicesFile — файл пристроїв, що береться з поточного каталогу, якщо ім'я не вказано.
 const defaultDevicesFile = "devices.csv"
@@ -101,7 +101,7 @@ func run(args []string) int {
 
 	initLog("basip-ctl.log")
 	defer closeLog()
-	logf("=== запуск: команда %s, файл %q, --ip %q", opt.Command, opt.File, opt.IPArg)
+	logf("=== запуск v%s: команда %s, файл %q, --ip %q", appVersion, opt.Command, opt.File, opt.IPArg)
 
 	app, code := prepare(opt)
 	if code != 0 {
@@ -122,7 +122,7 @@ func parseArgs(args []string) (*Options, error) {
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if a == "-h" || a == "--help" {
+		if a == "-h" || a == "--help" || a == "/?" || a == "-?" || a == "/h" {
 			o.Command = "help"
 			return o, nil
 		}
