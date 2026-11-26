@@ -123,31 +123,72 @@ func (a *App) backupParts() (settings, users bool) {
 	return s, u
 }
 
-// backupDevice знімає копію одного пристрою в архів. Повертає опис збереженого.
-func backupDevice(c *Client, d *Device, ar *Archive, settings, users bool) (string, error) {
+// backupResult — що вдалося зберегти з одного пристрою.
+type backupResult struct {
+	done    []string // збережені частини
+	notes   []string // частини, які пристрій не підтримує
+	failed  []string // частини, що завершилися помилкою
+	noneSup bool     // жодна з частин не підтримується
+}
+
+func (r backupResult) text() string {
+	t := "збережено: " + strings.Join(r.done, " + ")
+	if len(r.done) == 0 {
+		t = "нічого не збережено"
+	}
+	for _, n := range r.notes {
+		t += "; " + n + " — не підтримується"
+	}
+	for _, f := range r.failed {
+		t += "; " + f
+	}
+	return t
+}
+
+// backupDevice знімає копію одного пристрою в архів. Частини (налаштування, дані користувачів)
+// незалежні: якщо одна не підтримується або дала збій, інша все одно потрапляє в архів.
+func backupDevice(c *Client, d *Device, ar *Archive, settings, users bool) backupResult {
 	info, _ := c.Info()
 	if info != nil && d.Name == "" {
 		d.Name = info.DeviceName
 	}
-	var done []string
-	if settings {
-		data, err := c.Download("backup_settings")
-		if err != nil {
-			return "", fmt.Errorf("налаштування: %w", err)
-		}
-		ar.Add(d, "settings.zip", data)
-		done = append(done, "налаштування")
+	var r backupResult
+	type part struct {
+		want  bool
+		op    string
+		file  string
+		title string
 	}
-	if users {
-		data, err := c.Download("backup_users")
-		if err != nil {
-			return "", fmt.Errorf("дані користувачів: %w", err)
-		}
-		ar.Add(d, "users.zip", data)
-		done = append(done, "дані користувачів")
+	parts := []part{
+		{settings, "backup_settings", "settings.zip", "налаштування"},
+		{users, "backup_users", "users.zip", "дані користувачів"},
 	}
-	ar.AddManifest(d, info)
-	return strings.Join(done, " + "), nil
+	asked := 0
+	for i, p := range parts {
+		if !p.want {
+			continue
+		}
+		asked++
+		if i > 0 && len(r.done) > 0 {
+			// Коротка пауза між експортами: панелі гірше відпрацьовують два запити поспіль.
+			time.Sleep(2 * time.Second)
+		}
+		data, err := c.Download(p.op)
+		switch {
+		case err == nil:
+			ar.Add(d, p.file, data)
+			r.done = append(r.done, p.title)
+		case errors.Is(err, errNoOp):
+			r.notes = append(r.notes, p.title)
+		default:
+			r.failed = append(r.failed, p.title+": "+err.Error())
+		}
+	}
+	r.noneSup = asked > 0 && len(r.notes) == asked
+	if len(r.done) > 0 {
+		ar.AddManifest(d, info)
+	}
+	return r
 }
 
 func cmdBackup(a *App) int {
@@ -159,22 +200,25 @@ func cmdBackup(a *App) int {
 		if fail != nil {
 			return *fail
 		}
-		// Частини одного пристрою додаються в архів лише якщо копія вдалася повністю.
 		part := newArchive("")
-		what, err := backupDevice(c, d, part, settings, users)
-		if err != nil {
-			if errors.Is(err, errNoOp) {
-				return Result{Status: StUnsupported, Detail: err.Error()}
+		r := backupDevice(c, d, part, settings, users)
+		if len(r.done) > 0 {
+			ar.mu.Lock()
+			ar.entries = append(ar.entries, part.entries...)
+			for f := range part.folders {
+				ar.folders[f] = true
 			}
-			return Result{Status: StError, Detail: err.Error()}
+			ar.mu.Unlock()
 		}
-		ar.mu.Lock()
-		ar.entries = append(ar.entries, part.entries...)
-		for f := range part.folders {
-			ar.folders[f] = true
+		switch {
+		case r.noneSup:
+			return Result{Status: StUnsupported, Detail: "резервне копіювання недоступне на цьому пристрої"}
+		case len(r.failed) > 0:
+			// Частину збережено, але є збій — рахуємо як помилку, щоб не пропустити.
+			return Result{Status: StError, Detail: r.text()}
+		default:
+			return Result{Status: StOK, Detail: r.text()}
 		}
-		ar.mu.Unlock()
-		return Result{Status: StOK, Detail: "збережено: " + what}
 	})
 	a.writeArchive(ar, "Резервну копію збережено")
 	return a.Summarize(res)
@@ -299,8 +343,8 @@ func cmdRestore(a *App) int {
 		}
 		if !noBackup {
 			part := newArchive("")
-			if _, err := backupDevice(c, d, part, true, true); err != nil {
-				return Result{Status: StError, Detail: "не вдалося зробити попередню копію, відновлення скасовано: " + err.Error()}
+			if r := backupDevice(c, d, part, doS, doU); len(r.failed) > 0 || len(r.done) == 0 {
+				return Result{Status: StError, Detail: "не вдалося зробити попередню копію, відновлення скасовано: " + r.text()}
 			}
 			pre.mu.Lock()
 			pre.entries = append(pre.entries, part.entries...)

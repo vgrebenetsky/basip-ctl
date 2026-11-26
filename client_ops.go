@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // errNoOp — операції немає у профілі або пристрій відповідає 404/405 на всі варіанти шляху.
@@ -96,10 +97,26 @@ func (c *Client) CallJSON(op string, vars map[string]string, q url.Values, paylo
 }
 
 // Download завантажує файл (архів). Відповідь у форматі JSON вважається помилкою.
+// На збій пристрою (HTTP 5xx) робиться до двох повторів з паузою 3 і 6 с:
+// панелі іноді не встигають сформувати експорт одразу після попереднього.
 func (c *Client) Download(op string) ([]byte, error) {
 	c.long = true
 	defer func() { c.long = false }()
-	data, hdr, err := c.Call(op, nil, nil, nil, "")
+	var data []byte
+	var hdr http.Header
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(3*attempt) * time.Second)
+			logf("%s повтор %d: %s", c.dev.IP, attempt, op)
+		}
+		data, hdr, err = c.Call(op, nil, nil, nil, "")
+		var oe *OpError
+		if err != nil && errors.As(err, &oe) && oe.Code >= 500 {
+			continue
+		}
+		break
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +128,7 @@ func (c *Client) Download(op string) ([]byte, error) {
 		}
 		return nil, errors.New(msg)
 	}
+	logf("%s %s: отримано %d байт", c.dev.IP, op, len(data))
 	return data, nil
 }
 

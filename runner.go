@@ -99,7 +99,7 @@ func (a *App) RunAll(fn func(*Device) Result) []Result {
 			r := fn(d)
 			r.Dev = d
 			results[i] = r
-			logf("%s: %s %s", d.IP, statusSingle[r.Status], r.Detail)
+			logf("%s", strings.TrimSpace(fmt.Sprintf("%s: %s %s", d.IP, statusSingle[r.Status], r.Detail)))
 			a.printResult(r)
 		}(i, d)
 	}

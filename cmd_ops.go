@@ -24,7 +24,8 @@ func opFail(err error) Result {
 // Повертає false, якщо виконувати не треба.
 func (a *App) planned(action string, targets []*Device) bool {
 	if len(targets) == 0 {
-		fmt.Fprintln(a.Out, "Немає пристроїв, до яких можна застосувати дію.")
+		fmt.Fprintln(a.Out, "Немає пристроїв, до яких можна застосувати дію (перевірте позначку OK та колонку emergency у файлі).")
+		logf("%s: немає пристроїв, до яких можна застосувати дію", action)
 		return false
 	}
 	var ips []string
@@ -100,6 +101,7 @@ func cmdDoorStatus(a *App) int {
 			}
 			return opFail(err)
 		}
+		logf("%s door-status: %s", d.IP, strings.TrimSpace(string(data)))
 		var st doorState
 		if json.Unmarshal(data, &st) != nil {
 			return Result{Status: StError, Detail: "некоректна відповідь пристрою"}
@@ -108,6 +110,8 @@ func cmdDoorStatus(a *App) int {
 		switch {
 		case strings.EqualFold(st.Status, "closed"):
 			key, text = "зачинено", "зачинено"
+		case !strings.EqualFold(st.Status, "open"):
+			key, text = "невідомий стан", "стан пристрою: "+st.Status
 		case st.TooLong:
 			key, text = "відчинено задовго", fmt.Sprintf("відчинено задовго (%d с)", st.Open)
 		default:
@@ -122,7 +126,7 @@ func cmdDoorStatus(a *App) int {
 		return Result{Status: StOK, Detail: text}
 	})
 	var parts []string
-	for _, k := range []string{"зачинено", "відчинено", "відчинено задовго", "датчик не активовано"} {
+	for _, k := range []string{"зачинено", "відчинено", "відчинено задовго", "невідомий стан", "датчик не активовано"} {
 		if counts[k] > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", k, counts[k]))
 		}
