@@ -21,6 +21,8 @@ type Client struct {
 	prof  *Profile
 	token string
 	long  bool // довгий тайм-аут (завантаження файлів)
+	// accept — заголовок Accept для поточного запиту (порожньо — типовий JSON).
+	accept string
 }
 
 func (a *App) NewClient(d *Device) *Client {
@@ -66,7 +68,11 @@ func (c *Client) requestH(method, rawURL string, q url.Values, body []byte, ctyp
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
 	}
-	req.Header.Set("Accept", "application/json, */*")
+	accept := c.accept
+	if accept == "" {
+		accept = "application/json, */*"
+	}
+	req.Header.Set("Accept", accept)
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -81,6 +87,15 @@ func (c *Client) requestH(method, rawURL string, q url.Values, body []byte, ctyp
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+	if resp.StatusCode >= 500 {
+		// Для збоїв пристрою записуємо в журнал початок відповіді — для діагностики.
+		snip := strings.TrimSpace(string(data))
+		if len(snip) > 300 {
+			snip = snip[:300]
+		}
+		logf("%s %s %s → %d (Accept: %s) %s", c.dev.IP, method, logURL, resp.StatusCode, accept, snip)
+		return resp.StatusCode, data, resp.Header, err
+	}
 	logf("%s %s %s → %d", c.dev.IP, method, logURL, resp.StatusCode)
 	return resp.StatusCode, data, resp.Header, err
 }

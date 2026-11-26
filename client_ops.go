@@ -106,7 +106,10 @@ var errExportLocked = errors.New("експорт заблоковано попе
 // (раптом експорт справді виконується), далі — errExportLocked.
 func (c *Client) Download(op string) ([]byte, error) {
 	c.long = true
-	defer func() { c.long = false }()
+	// Як у документації BAS-IP: експорт запитується з Accept: application/zip.
+	// Ймовірна причина збою на панелях з API 2.21.0: на Accept: application/json вони відповідають HTTP 500 і блокують експорт.
+	c.accept = "application/zip"
+	defer func() { c.long = false; c.accept = "" }()
 	var data []byte
 	var hdr http.Header
 	var err error

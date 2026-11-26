@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const appVersion = "0.2.6 (етап 2)"
+const appVersion = "0.2.7 (етап 2)"
 
 // defaultDevicesFile — файл пристроїв, що береться з поточного каталогу, якщо ім'я не вказано.
 const defaultDevicesFile = "devices.csv"
