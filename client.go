@@ -20,6 +20,7 @@ type Client struct {
 	dev   *Device
 	prof  *Profile
 	token string
+	long  bool // довгий тайм-аут (завантаження файлів)
 }
 
 func (a *App) NewClient(d *Device) *Client {
@@ -44,6 +45,12 @@ func (c *Client) fullURL(ep Endpoint) string {
 
 // request виконує HTTP-запит. У журнал потрапляє лише метод, шлях і код відповіді, без параметрів.
 func (c *Client) request(method, rawURL string, q url.Values, body []byte, ctype string) (int, []byte, error) {
+	code, data, _, err := c.requestH(method, rawURL, q, body, ctype)
+	return code, data, err
+}
+
+// requestH — те саме, що request, але повертає ще й заголовки відповіді.
+func (c *Client) requestH(method, rawURL string, q url.Values, body []byte, ctype string) (int, []byte, http.Header, error) {
 	logURL := rawURL
 	if len(q) > 0 {
 		rawURL += "?" + q.Encode()
@@ -54,28 +61,40 @@ func (c *Client) request(method, rawURL string, q url.Values, body []byte, ctype
 	}
 	req, err := http.NewRequest(method, rawURL, rd)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	if ctype != "" {
 		req.Header.Set("Content-Type", ctype)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/json, */*")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := c.app.HTTP.Do(req)
+	hc := c.app.HTTP
+	if c.long && c.app.HTTPLong != nil {
+		hc = c.app.HTTPLong
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		logf("%s %s %s → помилка: %s", c.dev.IP, method, logURL, netErrText(err))
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
 	logf("%s %s %s → %d", c.dev.IP, method, logURL, resp.StatusCode)
-	return resp.StatusCode, data, err
+	return resp.StatusCode, data, resp.Header, err
 }
 
 // netErrText — зрозумілий опис мережевої помилки.
 func netErrText(err error) string {
+	// Прибираємо з помилки URL (у ньому можуть бути параметри запиту).
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return "пристрій розірвав з'єднання (перевантажений або обмежує запити)"
+	}
 	var ne net.Error
 	switch {
 	case errors.As(err, &ne) && ne.Timeout():
@@ -90,8 +109,8 @@ func netErrText(err error) string {
 		return "помилка TLS (можливо, пристрій працює по HTTP)"
 	}
 	s := err.Error()
-	if len(s) > 120 {
-		s = s[:120]
+	if len([]rune(s)) > 120 {
+		s = string([]rune(s)[:120])
 	}
 	return s
 }

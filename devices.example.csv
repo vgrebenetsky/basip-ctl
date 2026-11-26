@@ -2,7 +2,9 @@ ip;device_type;device_name;api_version;lock;status;emergency
 # Приклад. Адреси з документаційного діапазону 192.0.2.0/24 (RFC 5737), паролі вигадані.
 # Колонка пароля може називатися status або password: 32 hex-символи = MD5-хеш, інакше — пароль.
 # lock: 1 | 1,2 | 0 (усі замки); emergency: 1 — дозволено, порожньо — заборонено.
+# OK у полі пароля — пристрій пропускається в командах з входом (працюють лише ping та info).
 192.0.2.11;panel;AA-12FB;2.20.0;1;39bfbc3674a48f703b12b8e3de9c68b7;
 192.0.2.12;accesscontroller;CR-02BD;1.3.5;1;39bfbc3674a48f703b12b8e3de9c68b7;
 192.0.2.13;accesscontroller;CR-02BD;1.3.5;1;Example#Pass1;1;
 192.0.2.21;panel;AA-12FB;2.20.0;1,2;39bfbc3674a48f703b12b8e3de9c68b7;1;
+192.0.2.22;accesscontroller;CR-02BD;1.3.5;1;OK;

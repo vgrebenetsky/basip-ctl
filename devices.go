@@ -52,6 +52,12 @@ func (d *Device) PasswordHash() string {
 	return MD5Of(s)
 }
 
+// SkipAuth — у полі пароля вказано "OK": пристрій виключено з усіх дій, що потребують входу
+// (працюють лише ping та info).
+func (d *Device) SkipAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(d.Secret), "OK")
+}
+
 // HasSecret — для пристрою відомий пароль або хеш.
 func (d *Device) HasSecret() bool {
 	return strings.TrimSpace(d.Secret) != ""
@@ -240,6 +246,37 @@ func (df *DeviceFile) SetSecret(d *Device, secret string) {
 	}
 	f[idx] = secret
 	df.Lines[d.line] = strings.Join(f, ";")
+}
+
+// SetInfo оновлює у рядку пристрою колонки device_type, device_name, api_version,
+// зберігаючи решту полів. Повертає true, якщо щось змінилося.
+func (df *DeviceFile) SetInfo(d *Device, typ, name, api string) bool {
+	if !d.InFile {
+		return false
+	}
+	f := strings.Split(df.Lines[d.line], ";")
+	changed := false
+	set := func(col, val string, dst *string) {
+		idx, ok := df.Col[col]
+		if !ok || val == "" {
+			return
+		}
+		for len(f) <= idx {
+			f = append(f, "")
+		}
+		if strings.TrimSpace(f[idx]) != val {
+			f[idx] = val
+			*dst = val
+			changed = true
+		}
+	}
+	set("device_type", typ, &d.Type)
+	set("device_name", name, &d.Name)
+	set("api_version", api, &d.APIVersion)
+	if changed {
+		df.Lines[d.line] = strings.Join(f, ";")
+	}
+	return changed
 }
 
 // AppendDevice додає новий пристрій у кінець файлу (у пам'яті).

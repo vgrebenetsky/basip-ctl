@@ -8,12 +8,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const appVersion = "0.1.0 (етап 1)"
+const appVersion = "0.2.0 (етап 2)"
+
+// defaultDevicesFile — файл пристроїв, що береться з поточного каталогу, якщо ім'я не вказано.
+const defaultDevicesFile = "devices.csv"
 
 // Options — розібрані параметри командного рядка.
 type Options struct {
@@ -37,22 +41,28 @@ var valueFlags = map[string]bool{
 // Параметри-перемикачі.
 var boolFlags = map[string]bool{
 	"https": true, "yes": true, "dry-run": true, "json": true, "force": true,
-	"wait": true, "save": true, "no-backup": true, "settings": true, "users": true,
+	"wait": true, "save": true, "update": true, "no-file": true, "no-backup": true, "settings": true, "users": true,
 }
 
 // Команди, реалізовані на цьому етапі.
 var commands = map[string]func(*App) int{
-	"ping": cmdPing,
-	"info": cmdInfo,
-	"auth": cmdAuth,
+	"ping":           cmdPing,
+	"info":           cmdInfo,
+	"auth":           cmdAuth,
+	"door-status":    cmdDoorStatus,
+	"backup":         cmdBackup,
+	"restore":        cmdRestore,
+	"emergency-on":   cmdEmergencyOn,
+	"emergency-off":  cmdEmergencyOff,
+	"open":           cmdOpen,
+	"reboot":         cmdReboot,
+	"clear-logs":     cmdClearLogs,
+	"passwd-manager": cmdPasswdManager,
+	"passwd-admin":   cmdPasswdAdmin,
 }
 
 // Команди наступних етапів.
-var plannedCommands = map[string]bool{
-	"door-status": true, "backup": true, "restore": true, "emergency-on": true,
-	"emergency-off": true, "open": true, "reboot": true, "clear-logs": true,
-	"passwd-manager": true, "passwd-admin": true,
-}
+var plannedCommands = map[string]bool{}
 
 // Команди, для яких --ip обов'язковий (адреси або all).
 var requireIP = map[string]bool{
@@ -187,6 +197,7 @@ type App struct {
 	Cfg     *EndpointConfig
 	Pinger  *Pinger
 	HTTP    *http.Client
+	HTTPLong *http.Client // для завантаження/відновлення архівів
 	Scheme  string
 	Out     io.Writer // потік для построкового виводу та підсумку
 }
@@ -206,6 +217,18 @@ func prepare(opt *Options) (*App, int) {
 		},
 	}
 
+	longT := 3 * opt.Timeout
+	if longT < 120*time.Second {
+		longT = 120 * time.Second
+	}
+	app.HTTPLong = &http.Client{
+		Timeout: longT,
+		Transport: &http.Transport{
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			MaxIdleConnsPerHost: 2,
+		},
+	}
+
 	cfg, err := LoadEndpointConfig(opt.Values["endpoints"])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Помилка у файлі профілів API:", err)
@@ -213,9 +236,24 @@ func prepare(opt *Options) (*App, int) {
 	}
 	app.Cfg = cfg
 
-	if opt.File == "" && opt.IPArg == "" {
-		fmt.Fprintln(os.Stderr, "Помилка: вкажіть файл пристроїв (наприклад devices.csv) або параметр --ip")
-		return nil, 2
+	// Файл пристроїв за замовчуванням — devices.csv у поточному каталозі.
+	if opt.Bools["no-file"] {
+		if opt.File != "" {
+			fmt.Fprintln(os.Stderr, "Помилка: --no-file не можна поєднувати з іменем файлу пристроїв")
+			return nil, 2
+		}
+		if opt.IPArg == "" {
+			fmt.Fprintln(os.Stderr, "Помилка: з --no-file обов'язковий параметр --ip (адреси)")
+			return nil, 2
+		}
+	} else if opt.File == "" {
+		if fileExists(defaultDevicesFile) {
+			opt.File = defaultDevicesFile
+		} else if opt.IPArg == "" {
+			wd, _ := os.Getwd()
+			fmt.Fprintf(os.Stderr, "Помилка: файл %s не знайдено в %s. Вкажіть ім'я файлу або --ip\n", defaultDevicesFile, wd)
+			return nil, 2
+		}
 	}
 	if requireIP[opt.Command] && opt.IPArg == "" {
 		fmt.Fprintf(os.Stderr, "Помилка: для команди %s обов'язковий параметр --ip (адреси або all)\n", opt.Command)
@@ -231,6 +269,11 @@ func prepare(opt *Options) (*App, int) {
 			fmt.Fprintln(os.Stderr, "Попередження:", w)
 		}
 		app.File = df
+		if abs, err := filepath.Abs(opt.File); err == nil {
+			fmt.Fprintln(os.Stderr, "Файл пристроїв:", abs)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Файл пристроїв: не використовується")
 	}
 
 	devs, warns, err := selectDevices(app.File, opt.IPArg, opt.Password)
@@ -254,28 +297,45 @@ func printHelp() {
 	fmt.Print(`basip-ctl ` + appVersion + ` — групове керування пристроями BAS-IP
 
 Використання:
-  basip-ctl <команда> [devices.csv] [параметри]
+  basip-ctl <команда> [файл] [параметри]
 
-Команди (етап 1):
-  ping            перевірка доступності пристроїв
-  auth            перевірка входу (admin) на пристроях
-  info            інформація про пристрій (/api/info, без входу)
+  Якщо файл не вказано, використовується devices.csv з поточного каталогу.
 
-Команди наступних етапів:
-  door-status, backup, restore, emergency-on, emergency-off, open,
-  reboot, clear-logs, passwd-manager, passwd-admin
+Команди:
+  ping            перевірка доступності
+  info            інформація про пристрій (без входу); --update — оновити файл
+  auth            перевірка входу admin
+  door-status     стан датчика дверей
+  backup          резервна копія (налаштування + дані користувачів) в один архів
+  emergency-on    аварійний режим: відкрити замки (лише emergency=1), --duration сек (типово 12 год)
+  emergency-off   вимкнути аварійний режим (лише emergency=1)
+  open            відкрити замки з колонки lock            [--ip обов'язковий]
+  restore         відновлення з архіву backup --from файл   [--ip обов'язковий]
+  reboot          перезавантаження, --wait — дочекатися     [--ip обов'язковий]
+  clear-logs      очистити системні журнали, --save — зберегти перед очищенням [--ip обов'язковий]
+  passwd-manager  змінити пароль manager, --force — навіть якщо вимкнено [--ip обов'язковий]
+  passwd-admin    змінити пароль admin, новий хеш пишеться у файл     [--ip обов'язковий]
 
 Параметри:
-  --ip <адреси>       192.168.10.11 | 192.168.10.11,192.168.10.21 |
-                      192.168.10.11-16 | all
+  --ip <адреси>       192.168.10.11 | 192.168.10.11,192.168.10.21 | 192.168.10.11-16 | all
   --password <знач.>  пароль або MD5-хеш для пристроїв, яких немає у файлі
+  --no-file           не використовувати файл пристроїв (потрібні --ip і --password)
   --https             працювати через HTTPS (самопідписані сертифікати приймаються)
+  --settings/--users  (backup, restore) лише налаштування / лише дані користувачів
+  --from <архів>      (restore) загальний архів, створений командою backup
+  --no-backup         (restore) не робити копію перед відновленням
+  --duration <сек>    (emergency-on) тривалість, 1..604800, типово 43200
+  --unlock-time <сек> (open) час відкриття; без параметра — як налаштовано на пристрої
+  --yes               не питати підтвердження
+  --dry-run           показати, що буде зроблено, без змін
   --workers <N>       кількість пристроїв, що обробляються одночасно (типово 10)
   --timeout <сек>     тайм-аут HTTP-запиту (типово 5)
-  --report <файл>     зберегти результати у CSV-файл
+  --report <файл>     зберегти результати у CSV
   --endpoints <файл>  файл профілів API (типово endpoints.json поруч з програмою)
   --json              (info) вивести дані у форматі JSON
-  --help              ця довідка
+
+Паролі для passwd-* вводяться з клавіатури без відображення або беруться зі змінних
+BASIP_NEW_PASSWORD та BASIP_OLD_PASSWORD.
 
 Коди завершення: 0 — усе успішно, 1 — є помилки на частині пристроїв,
 2 — помилка параметрів або файлу.

@@ -10,10 +10,16 @@ import (
 
 // Endpoint — опис одного виклику API.
 // Шлях, що починається з "/api/", використовується як є; інакше до нього додається Prefix профілю.
+// У шляху можна використовувати {lock} — номер замка.
 type Endpoint struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-	Mode   string `json:"mode,omitempty"` // для login: "json" (тіло запиту) або "query" (параметри URL)
+	Method string   `json:"method"`
+	Path   string   `json:"path"`
+	Mode   string   `json:"mode,omitempty"`  // login/паролі: "json" або "query"
+	Alt    []string `json:"alt,omitempty"`   // запасні варіанти "МЕТОД /шлях", пробуються лише при 404/405
+	Field  string   `json:"field,omitempty"` // ім'я поля файлу для multipart-завантаження
+	Old    string   `json:"old,omitempty"`   // ім'я параметра старого пароля (порожньо — не потрібен)
+	New    string   `json:"new,omitempty"`   // ім'я параметра нового пароля
+	Hash   bool     `json:"hash,omitempty"`  // передавати MD5 замість відкритого пароля
 }
 
 // Profile — набір викликів для сімейства пристроїв.
@@ -24,7 +30,6 @@ type Profile struct {
 }
 
 // ProfileRule — правило вибору профілю за типом пристрою та старшою цифрою версії API.
-// Порожнє значення поля означає «будь-яке».
 type ProfileRule struct {
 	DeviceType string `json:"device_type"`
 	APIMajor   string `json:"api_major"`
@@ -36,26 +41,58 @@ type EndpointConfig struct {
 	Rules    []ProfileRule       `json:"rules"`
 }
 
-// defaultConfig — вбудовані профілі. Етап 1: вхід та інформація про пристрій.
-// Шляхи решти операцій додаються в наступних етапах після перевірки на тестових пристроях.
+// commonOps — виклики, однакові для Android-панелей та Camdroid-пристроїв (за документацією BAS-IP).
+func commonOps() map[string]Endpoint {
+	return map[string]Endpoint{
+		"info":          {Method: "GET", Path: "/api/info"},
+		"door_status":   {Method: "GET", Path: "/access/door/status"},
+		"open":          {Method: "GET", Path: "/access/general/lock/open/remote/accepted/{lock}"},
+		"emergency_on":  {Method: "POST", Path: "/access/general/lock/open/emergency"},
+		"emergency_off": {Method: "POST", Path: "/access/general/lock/close/emergency"},
+		"backup_settings": {Method: "GET", Path: "/system/settings/backup/all"},
+		"restore_settings": {Method: "POST", Path: "/system/settings/backup/all", Field: "file"},
+		// Шлях перезавантаження в документації не знайдено — перебираються варіанти.
+		"reboot": {Method: "GET", Path: "/system/reboot/run",
+			Alt: []string{"POST /system/reboot/run", "GET /system/reboot", "POST /system/reboot"}},
+		"log_get":   {Method: "GET", Path: "/system/debug/log"},
+		"log_clear": {Method: "DELETE", Path: "/system/debug/log"},
+		"manager_status": {Method: "GET", Path: "/security/manager",
+			Alt: []string{"GET /security/manager/status", "GET /security/password/manager"}},
+	}
+}
+
+func withOps(base map[string]Endpoint, extra map[string]Endpoint) map[string]Endpoint {
+	for k, v := range extra {
+		base[k] = v
+	}
+	return base
+}
+
+// defaultConfig — вбудовані профілі.
 func defaultConfig() *EndpointConfig {
 	return &EndpointConfig{
 		Profiles: map[string]*Profile{
-			// Багатоабонентські Android-панелі, API 2.x (AA-12FB).
+			// Багатоабонентські Android-панелі, API 2.x (AA-12FB). Вхід перевірено на парку.
 			"android-v2": {
 				Prefix: "/api/v1",
-				Ops: map[string]Endpoint{
-					"login": {Method: "POST", Path: "/login", Mode: "json"},
-					"info":  {Method: "GET", Path: "/api/info"},
-				},
+				Ops: withOps(commonOps(), map[string]Endpoint{
+					"login":          {Method: "POST", Path: "/login", Mode: "json"},
+					"backup_users":   {Method: "GET", Path: "/system/settings/tables"},
+					"restore_users":  {Method: "POST", Path: "/system/settings/tables", Field: "file"},
+					"passwd_admin":   {Method: "POST", Path: "/security/password/admin", Mode: "json", Old: "old_password", New: "new_password"},
+					"passwd_manager": {Method: "POST", Path: "/security/password/manager", Mode: "json", New: "new_password"},
+				}),
 			},
-			// Контролери доступу, API 1.x (CR-02BD).
+			// Camdroid-пристрої, API 1.x (контролер CR-02BD). Вхід перевірено на парку.
 			"controller-v1": {
 				Prefix: "/api/v1",
-				Ops: map[string]Endpoint{
-					"login": {Method: "GET", Path: "/login", Mode: "query"},
-					"info":  {Method: "GET", Path: "/api/info"},
-				},
+				Ops: withOps(commonOps(), map[string]Endpoint{
+					"login":          {Method: "GET", Path: "/login", Mode: "query"},
+					"backup_users":   {Method: "GET", Path: "/system/settings/export/tables"},
+					"restore_users":  {Method: "POST", Path: "/system/settings/import/tables", Field: "file", Alt: []string{"POST /system/settings/export/tables"}},
+					"passwd_admin":   {Method: "POST", Path: "/security/password/admin", Mode: "query", Old: "oldPassword", New: "newPassword"},
+					"passwd_manager": {Method: "POST", Path: "/security/password/manager", Mode: "query", New: "newPassword"},
+				}),
 			},
 			// Старі панелі з API /v0.
 			"legacy-v0": {
@@ -124,7 +161,6 @@ func LoadEndpointConfig(explicit string) (*EndpointConfig, error) {
 			p.Ops[op] = ep
 		}
 	}
-	// Правила з файлу мають пріоритет над вбудованими.
 	for _, r := range user.Rules {
 		if _, ok := cfg.Profiles[r.Profile]; !ok {
 			return nil, fmt.Errorf("%s: правило посилається на невідомий профіль %q", path, r.Profile)

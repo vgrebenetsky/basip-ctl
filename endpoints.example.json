@@ -1,19 +1,17 @@
 {
   "profiles": {
     "android-v2": {
-      "prefix": "/api/v1",
       "ops": {
-        "login": { "method": "POST", "path": "/login", "mode": "json" }
+        "reboot":         { "method": "GET",  "path": "/system/reboot/run" },
+        "manager_status": { "method": "GET",  "path": "/security/manager" },
+        "passwd_admin":   { "method": "POST", "path": "/security/password/admin", "mode": "json", "old": "old_password", "new": "new_password" },
+        "restore_settings": { "method": "POST", "path": "/system/settings/backup/all", "field": "file" }
       }
     },
     "controller-v1": {
-      "prefix": "/api/v1",
       "ops": {
-        "login": { "method": "GET", "path": "/login", "mode": "query" }
+        "restore_users": { "method": "POST", "path": "/system/settings/import/tables", "field": "file" }
       }
     }
-  },
-  "rules": [
-    { "device_type": "accesscontroller", "api_major": "1", "profile": "controller-v1" }
-  ]
+  }
 }

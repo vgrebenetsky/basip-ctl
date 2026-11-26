@@ -6,9 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const adminUser = "admin"
+
+// skipOKText — пояснення для пристроїв з позначкою OK у полі пароля.
+const skipOKText = "позначка OK у файлі, дії з входом не виконуються"
 
 func (a *App) printHeader(title string) {
 	fmt.Fprintf(a.Out, "%s: пристроїв %d, перевірка доступності — %s\n\n", title, len(a.Devices), a.Pinger.ModeText())
@@ -48,7 +52,14 @@ func cmdInfo(a *App) int {
 		// JSON іде у stdout, построковий вивід і підсумок — у stderr.
 		a.Out = os.Stderr
 	}
+	update := a.Opt.Bools["update"]
+	if update && a.File == nil {
+		fmt.Fprintln(os.Stderr, "Помилка: --update потребує файлу пристроїв")
+		return 2
+	}
 	a.printHeader("Інформація про пристрої")
+	var updMu sync.Mutex
+	var updated []string
 	res := a.RunAll(func(d *Device) Result {
 		if !a.Pinger.Alive(d.IP) {
 			return Result{Status: StUnreachable}
@@ -64,11 +75,34 @@ func cmdInfo(a *App) int {
 			dash(info.FirmwareVersion), dash(info.APIVersion), dash(info.DeviceType), dash(info.Serial))
 		if d.InFile {
 			if diff := infoMismatch(d, info); len(diff) > 0 {
+				if update {
+					updMu.Lock()
+					changed := a.File.SetInfo(d, info.DeviceType, info.DeviceName, info.APIVersion)
+					if changed {
+						updated = append(updated, d.IP)
+					}
+					updMu.Unlock()
+					if changed {
+						return Result{Status: StOK, Detail: "оновлено у файлі: " + strings.Join(diff, ", ") + " | " + detail, Data: info}
+					}
+				}
 				return Result{Status: StMismatch, Detail: strings.Join(diff, ", ") + " | " + detail, Data: info}
 			}
 		}
 		return Result{Status: StOK, Detail: detail, Data: info}
 	})
+	if len(updated) > 0 {
+		sortIPs(updated)
+		bak, err := a.File.Save()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Помилка оновлення файлу пристроїв:", err)
+		} else {
+			fmt.Fprintf(a.Out, "\nУ %s оновлено записів: %d (%s). Резервна копія: %s\n",
+				filepath.Base(a.File.Path), len(updated), strings.Join(updated, ", "), bak)
+		}
+	} else if update {
+		fmt.Fprintln(a.Out, "\nФайл пристроїв не змінювався: розбіжностей немає.")
+	}
 	code := a.Summarize(res)
 	if asJSON {
 		var out []map[string]any
@@ -99,6 +133,9 @@ func dash(s string) string {
 // connect — спільний крок для команд з входом: ping, уточнення типу пристрою, вхід admin.
 // Повертає клієнт з токеном або результат-помилку.
 func (a *App) connect(d *Device) (*Client, *Result) {
+	if d.SkipAuth() {
+		return nil, &Result{Status: StSkipped, Detail: skipOKText}
+	}
 	if !a.Pinger.Alive(d.IP) {
 		return nil, &Result{Status: StUnreachable}
 	}
