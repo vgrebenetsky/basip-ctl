@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-const appVersion = "0.2.2 (етап 2)"
+const appVersion = "0.2.6 (етап 2)"
 
 // defaultDevicesFile — файл пристроїв, що береться з поточного каталогу, якщо ім'я не вказано.
 const defaultDevicesFile = "devices.csv"
@@ -88,6 +88,8 @@ func run(args []string) int {
 	case "version":
 		fmt.Println("basip-ctl", appVersion)
 		return 0
+	case "api-map":
+		return cmdAPIMap(opt)
 	}
 	handler, ok := commands[opt.Command]
 	if !ok {
@@ -315,6 +317,7 @@ func printHelp() {
   clear-logs      очистити системні журнали, --save — зберегти перед очищенням [--ip обов'язковий]
   passwd-manager  змінити пароль manager, --force — навіть якщо вимкнено [--ip обов'язковий]
   passwd-admin    змінити пароль admin, новий хеш пишеться у файл     [--ip обов'язковий]
+  api-map         показати, які запити API надсилаються пристроям кожного типу
 
 Параметри:
   --ip <адреси>       192.168.10.11 | 192.168.10.11,192.168.10.21 | 192.168.10.11-16 | all

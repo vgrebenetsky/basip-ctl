@@ -310,6 +310,9 @@ func cmdClearLogs(a *App) int {
 		if fail != nil {
 			return *fail
 		}
+		if !c.Has("log_clear") {
+			return Result{Status: StUnsupported, Detail: "системного журналу на цьому типі пристроїв немає"}
+		}
 		if save {
 			data, err := c.Download("log_get")
 			if err != nil {
@@ -322,10 +325,19 @@ func cmdClearLogs(a *App) int {
 		if _, _, err := c.Call("log_clear", nil, nil, nil, ""); err != nil {
 			return opFail(err)
 		}
-		if save {
-			return Result{Status: StOK, Detail: "журнал збережено й очищено"}
+		detail := "syslog очищено"
+		// Налагоджувальний журнал очищається додатково; його збій не скасовує результат.
+		if c.Has("debuglog_clear") {
+			if _, _, err := c.Call("debuglog_clear", nil, nil, nil, ""); err != nil {
+				detail += "; налагоджувальний журнал не очищено: " + opFail(err).Detail
+			} else {
+				detail += ", налагоджувальний журнал очищено"
+			}
 		}
-		return Result{Status: StOK, Detail: "журнал очищено"}
+		if save {
+			detail = "налагоджувальний журнал збережено; " + detail
+		}
+		return Result{Status: StOK, Detail: detail}
 	})
 	if save {
 		a.writeArchive(arch, "Журнали збережено")

@@ -96,38 +96,34 @@ func (c *Client) CallJSON(op string, vars map[string]string, q url.Values, paylo
 	return data, err
 }
 
+// errExportLocked — панель повідомляє, що експорт «ще триває», хоча насправді він завис
+// після збою (HTTP 500). Знімається лише перезавантаженням пристрою.
+var errExportLocked = errors.New("експорт заблоковано попереднім збоєм — потрібне перезавантаження пристрою")
+
 // Download завантажує файл (архів). Відповідь у форматі JSON вважається помилкою.
-// Повтори:
-//   - HTTP 5xx — до двох повторів з паузою 3 і 6 с;
-//   - HTTP 400 «... is being processed» (панель ще формує попередній експорт) —
-//     очікування з перевіркою кожні 5 с, загалом до 2 хв.
+// Повторів після HTTP 5xx немає: на панелях збій залишає експорт «у процесі» і повтор
+// лише отримує HTTP 400. На HTTP 400 «... is being processed» чекаємо до 1 хв
+// (раптом експорт справді виконується), далі — errExportLocked.
 func (c *Client) Download(op string) ([]byte, error) {
 	c.long = true
 	defer func() { c.long = false }()
 	var data []byte
 	var hdr http.Header
 	var err error
-	fails5xx := 0
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(time.Minute)
 	for {
 		data, hdr, err = c.Call(op, nil, nil, nil, "")
 		var oe *OpError
 		if err == nil || !errors.As(err, &oe) {
 			break
 		}
-		if oe.Code >= 500 && fails5xx < 2 {
-			fails5xx++
-			logf("%s %s: збій пристрою, повтор %d", c.dev.IP, op, fails5xx)
-			time.Sleep(time.Duration(3*fails5xx) * time.Second)
-			continue
-		}
 		if oe.Code == 400 && strings.Contains(strings.ToLower(oe.Msg), "being processed") {
 			if time.Now().After(deadline) {
-				err = errors.New("пристрій понад 2 хв повідомляє, що експорт ще триває (ймовірно, завис — допоможе перезавантаження)")
+				err = errExportLocked
 				break
 			}
-			logf("%s %s: експорт ще триває, чекаємо 5 с", c.dev.IP, op)
-			time.Sleep(5 * time.Second)
+			logf("%s %s: пристрій повідомляє, що експорт триває, чекаємо 10 с", c.dev.IP, op)
+			time.Sleep(10 * time.Second)
 			continue
 		}
 		break
@@ -145,6 +141,12 @@ func (c *Client) Download(op string) ([]byte, error) {
 	}
 	logf("%s %s: отримано %d байт", c.dev.IP, op, len(data))
 	return data, nil
+}
+
+// Has — чи є операція в профілі пристрою.
+func (c *Client) Has(op string) bool {
+	_, ok := c.op(op)
+	return ok
 }
 
 // Upload відправляє файл як multipart/form-data.
@@ -177,7 +179,8 @@ func (c *Client) Upload(op, filename string, content []byte) error {
 
 // SetPassword змінює пароль через операцію passwd_admin або passwd_manager.
 // Формат параметрів (query/json, імена, MD5) задається профілем.
-func (c *Client) SetPassword(op, oldPass, newPass string) error {
+// enabled — стан облікового запису для поля Enabled (nil — поле не передається).
+func (c *Client) SetPassword(op, oldPass, newPass string, enabled *bool) error {
 	ep, ok := c.op(op)
 	if !ok {
 		return errNoOp
@@ -197,12 +200,21 @@ func (c *Client) SetPassword(op, oldPass, newPass string) error {
 		if ep.Old != "" {
 			q.Set(ep.Old, val(oldPass))
 		}
-		_, _, err := c.Call(op, nil, q, nil, "")
+		// Те саме дублюється в JSON-тілі (old_password/new_password): запасні шляхи
+		// на кшталт /security/password/web/admin очікують саме тіло, а не параметри.
+		jb := map[string]any{"new_password": val(newPass)}
+		if ep.Old != "" {
+			jb["old_password"] = val(oldPass)
+		}
+		_, err := c.CallJSON(op, nil, q, jb)
 		return err
 	}
-	payload := map[string]string{newName: val(newPass)}
+	payload := map[string]any{newName: val(newPass)}
 	if ep.Old != "" {
 		payload[ep.Old] = val(oldPass)
+	}
+	if ep.Enabled != "" && enabled != nil {
+		payload[ep.Enabled] = *enabled
 	}
 	_, err := c.CallJSON(op, nil, nil, payload)
 	return err
@@ -220,6 +232,7 @@ func (c *Client) ManagerStatus() (enabled bool, known bool, err error) {
 	if err != nil {
 		return false, false, err
 	}
+	logf("%s: стан manager — відповідь: %s", c.dev.IP, strings.TrimSpace(string(data)))
 	var m map[string]any
 	if json.Unmarshal(data, &m) != nil {
 		return false, false, nil

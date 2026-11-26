@@ -49,7 +49,12 @@ func cmdPasswdManager(a *App) int {
 		default:
 			note = " (стан manager визначити не вдалося)"
 		}
-		if err := c.SetPassword("passwd_manager", "", newPass); err != nil {
+		// Стан облікового запису не змінюємо: передаємо поточний, якщо його вдалося визначити.
+		var keep *bool
+		if err == nil && known {
+			keep = &enabled
+		}
+		if err := c.SetPassword("passwd_manager", "", newPass, keep); err != nil {
 			return opFail(err)
 		}
 		return Result{Status: StOK, Detail: "пароль manager змінено" + note}
@@ -111,7 +116,7 @@ func cmdPasswdAdmin(a *App) int {
 		if fail != nil {
 			return *fail
 		}
-		if err := c.SetPassword("passwd_admin", oldPass, newPass); err != nil {
+		if err := c.SetPassword("passwd_admin", oldPass, newPass, nil); err != nil {
 			return opFail(err)
 		}
 		// Перевірка: вхід з новим паролем. Якщо не вдався — перевіряємо, чи діє старий.

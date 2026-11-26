@@ -129,6 +129,7 @@ type backupResult struct {
 	notes   []string // частини, які пристрій не підтримує
 	failed  []string // частини, що завершилися помилкою
 	noneSup bool     // жодна з частин не підтримується
+	reboot  bool     // експорт завис на пристрої — допоможе перезавантаження
 }
 
 func (r backupResult) text() string {
@@ -182,6 +183,10 @@ func backupDevice(c *Client, d *Device, ar *Archive, settings, users bool) backu
 			r.notes = append(r.notes, p.title)
 		default:
 			r.failed = append(r.failed, p.title+": "+err.Error())
+			var oe *OpError
+			if errors.Is(err, errExportLocked) || (errors.As(err, &oe) && oe.Code >= 500) {
+				r.reboot = true
+			}
 		}
 	}
 	r.noneSup = asked > 0 && len(r.notes) == asked
@@ -195,6 +200,8 @@ func cmdBackup(a *App) int {
 	settings, users := a.backupParts()
 	a.printHeader("Резервне копіювання")
 	ar := newArchive("backup")
+	var stuckMu sync.Mutex
+	var stuck []string
 	res := a.RunAll(func(d *Device) Result {
 		c, fail := a.connect(d)
 		if fail != nil {
@@ -202,6 +209,11 @@ func cmdBackup(a *App) int {
 		}
 		part := newArchive("")
 		r := backupDevice(c, d, part, settings, users)
+		if r.reboot {
+			stuckMu.Lock()
+			stuck = append(stuck, d.IP)
+			stuckMu.Unlock()
+		}
 		if len(r.done) > 0 {
 			ar.mu.Lock()
 			ar.entries = append(ar.entries, part.entries...)
@@ -221,6 +233,13 @@ func cmdBackup(a *App) int {
 		}
 	})
 	a.writeArchive(ar, "Резервну копію збережено")
+	if len(stuck) > 0 {
+		sortIPs(stuck)
+		fmt.Fprintf(a.Out, "\nЕкспорт даних користувачів завис на %d пристр.: %s\n", len(stuck), strings.Join(stuck, ", "))
+		fmt.Fprintf(a.Out, "Перезавантажте їх і повторіть копію:\n  basip-ctl reboot --ip %s --wait\n  basip-ctl backup --ip %s\n",
+			strings.Join(stuck, ","), strings.Join(stuck, ","))
+		logf("експорт завис: %s", strings.Join(stuck, ","))
+	}
 	return a.Summarize(res)
 }
 
